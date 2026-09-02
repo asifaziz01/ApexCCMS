@@ -1,0 +1,40 @@
+{
+  "name": "northern-star-ccms",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "api": "node server/index.js",
+    "worker": "node scripts/worker.mjs",
+    "db:migrate": "node db/migrate.mjs",
+    "db:seed": "node db/seed.mjs",
+    "test:database": "node scripts/database-contract-test.mjs",
+    "verify:audit": "node scripts/verify-audit-chain.mjs",
+    "test:backup-contract": "node scripts/backup-contract-test.mjs",
+    "check:production": "node scripts/production-config-check.mjs",
+    "test:production-config": "node scripts/production-config-test.mjs",
+    "test:security": "npm audit --audit-level=high",
+    "test:authorization": "node scripts/authorization-test.mjs",
+    "test:auth-jwt": "node scripts/auth-jwt-test.mjs",
+    "test:ui-contract": "node scripts/ui-contract-test.mjs",
+    "test:wait-api": "node scripts/wait-for-api.mjs",
+    "build": "vite build",
+    "test:smoke": "node scripts/smoke-test.mjs",
+    "test:platform": "node scripts/platform-smoke-test.mjs",
+    "test:server": "node scripts/server-regression-test.mjs",
+    "test:production-errors": "node scripts/production-error-test.mjs",
+    "test:deployment-contract": "node scripts/deployment-contract-test.mjs",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "jose": "^6.2.10",
+    "lucide-react": "latest",
+    "pg": "^8.23.0",
+    "react": "latest",
+    "react-dom": "latest",
+    "typescript": "latest",
+    "vite": "latest"
+  }
+}

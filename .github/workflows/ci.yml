@@ -1,0 +1,92 @@
+name: Northern Star CCMS CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:security
+      - run: npm run test:production-config
+      - run: npm run test:authorization
+      - run: npm run test:auth-jwt
+      - run: npm run test:ui-contract
+      - run: npm run build
+      - run: npm run api > api.log 2>&1 &
+      - run: node scripts/wait-for-api.mjs
+      - run: npm run test:smoke
+      - run: npm run test:platform
+      - run: npm run test:server
+      - run: npm run test:production-errors
+      - run: npm run test:deployment-contract
+      - run: npm run test:backup-contract
+      - run: npm run test:database
+      - if: always()
+        run: cat api.log || true
+
+  database:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: northern_star_ccms
+          POSTGRES_USER: ccms_app
+          POSTGRES_PASSWORD: ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ccms_app -d northern_star_ccms"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+        env:
+          DATABASE_URL: postgresql://ccms_app:ci-password@localhost:5432/northern_star_ccms
+      - run: npm run db:seed
+        env:
+          DATABASE_URL: postgresql://ccms_app:ci-password@localhost:5432/northern_star_ccms
+          INSTITUTION_ID: 00000000-0000-4000-8000-000000000001
+      - run: npm run api > db-api.log 2>&1 &
+        env:
+          DATABASE_URL: postgresql://ccms_app:ci-password@localhost:5432/northern_star_ccms
+          INSTITUTION_ID: 00000000-0000-4000-8000-000000000001
+          DEV_ACTOR_SUBJECT: seed:ccms-admin@northernstar.ca
+          REQUIRE_AUTH: "false"
+          EVIDENCE_STORAGE_PROVIDER: ci-object-storage
+      - run: node scripts/wait-for-api.mjs
+        env:
+          CCMS_API_URL: http://localhost:8787/api/health
+      - run: npm run test:smoke
+        env:
+          CCMS_API_URL: http://localhost:8787
+      - run: npm run test:platform
+        env:
+          CCMS_API_URL: http://localhost:8787
+      - run: npm run test:database
+        env:
+          DATABASE_URL: postgresql://ccms_app:ci-password@localhost:5432/northern_star_ccms
+      - run: npm run verify:audit
+        env:
+          DATABASE_URL: postgresql://ccms_app:ci-password@localhost:5432/northern_star_ccms
+          INSTITUTION_ID: 00000000-0000-4000-8000-000000000001
+      - if: always()
+        run: cat db-api.log || true

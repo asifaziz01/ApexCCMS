@@ -1,0 +1,55 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 8787
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?OIDC_ISSUER_URL is required}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?OIDC_CLIENT_ID is required}
+      CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
+      REQUIRE_AUTH: "true"
+      INSTITUTION_ID: ${INSTITUTION_ID:?INSTITUTION_ID is required}
+      EVIDENCE_STORAGE_PROVIDER: ${EVIDENCE_STORAGE_PROVIDER:?EVIDENCE_STORAGE_PROVIDER is required}
+      DATA_RESIDENCY_REGION: ${DATA_RESIDENCY_REGION:?DATA_RESIDENCY_REGION is required}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1048576}
+    expose:
+      - "8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    command: ["node", "scripts/worker.mjs"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      JOB_POLL_MS: ${JOB_POLL_MS:-5000}
+      JOB_STALE_AFTER_SECONDS: ${JOB_STALE_AFTER_SECONDS:-900}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        VITE_API_URL: ${VITE_API_URL:?VITE_API_URL is required}
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      api:
+        condition: service_healthy
