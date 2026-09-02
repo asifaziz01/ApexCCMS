@@ -9,7 +9,8 @@ services:
       DATABASE_URL: postgresql://ccms_app:change-me-local-only@postgres:5432/northern_star_ccms
       CORS_ORIGIN: http://localhost:8080
       REQUIRE_AUTH: "false"
-      INSTITUTION_ID: INS-000001
+      # Development tenant UUID; replace with the seeded institution UUID in a real environment.
+      INSTITUTION_ID: 00000000-0000-4000-8000-000000000001
     ports:
       - "8787:8787"
     depends_on:
