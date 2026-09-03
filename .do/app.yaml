@@ -1,0 +1,144 @@
+# DigitalOcean App Platform spec — TESTING ENVIRONMENT ONLY.
+# Not production: uses a dev database (no PITR/backups), runs with
+# REQUIRE_AUTH=false, and disables TLS certificate verification to Postgres.
+# See docs/DEPLOYMENT_RUNBOOK.md before promoting anything to production.
+#
+# Create the app:   doctl apps create --spec .do/app.yaml
+# Update the app:   doctl apps update <app-id> --spec .do/app.yaml
+
+name: apexccms-testing
+region: tor
+
+databases:
+  # Dev database: cheap, lives inside the app, no backups — testing only.
+  # For production replace with an attached DO Managed PostgreSQL cluster
+  # ("production: true") to satisfy the runbook's backup/PITR requirement.
+  - name: db
+    engine: PG
+    version: "16"
+    production: false
+
+jobs:
+  # Applies db/migrations/ before each deployment goes live.
+  - name: migrate
+    kind: PRE_DEPLOY
+    github:
+      repo: saifulhaque90/ApexCCMS
+      branch: master
+      deploy_on_push: true
+    dockerfile_path: Dockerfile.api
+    run_command: node db/migrate.mjs
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    envs:
+      # sslmode=no-verify: node-postgres cannot verify DO's private CA without
+      # extra wiring; acceptable for the testing environment only.
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: postgresql://${db.USERNAME}:${db.PASSWORD}@${db.HOSTNAME}:${db.PORT}/${db.DATABASE}?sslmode=no-verify
+
+services:
+  - name: api
+    github:
+      repo: saifulhaque90/ApexCCMS
+      branch: master
+      deploy_on_push: true
+    dockerfile_path: Dockerfile.api
+    http_port: 8787
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    health_check:
+      http_path: /api/health
+      initial_delay_seconds: 10
+      period_seconds: 10
+    envs:
+      - key: NODE_ENV
+        scope: RUN_TIME
+        value: production
+      - key: PORT
+        scope: RUN_TIME
+        value: "8787"
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: postgresql://${db.USERNAME}:${db.PASSWORD}@${db.HOSTNAME}:${db.PORT}/${db.DATABASE}?sslmode=no-verify
+      # Testing only: no identity provider wired up yet. Production requires
+      # REQUIRE_AUTH=true plus real OIDC_ISSUER_URL / OIDC_CLIENT_ID values.
+      - key: REQUIRE_AUTH
+        scope: RUN_TIME
+        value: "false"
+      # Actor subject used for unauthenticated writes in testing.
+      # Set to a subject that exists after `node db/seed.mjs` if needed.
+      - key: DEV_ACTOR_SUBJECT
+        scope: RUN_TIME
+        value: dev-smoke-actor
+      # Same-origin in this app (ingress routes /api to this service),
+      # but the API still validates this value.
+      - key: CORS_ORIGIN
+        scope: RUN_TIME
+        value: ${APP_URL}
+      - key: INSTITUTION_ID
+        scope: RUN_TIME
+        value: INS-000001
+      - key: EVIDENCE_STORAGE_PROVIDER
+        scope: RUN_TIME
+        value: object-storage
+      - key: DATA_RESIDENCY_REGION
+        scope: RUN_TIME
+        value: Canada-approved-region
+      - key: RATE_LIMIT_PER_MINUTE
+        scope: RUN_TIME
+        value: "120"
+      - key: MAX_BODY_BYTES
+        scope: RUN_TIME
+        value: "1048576"
+
+workers:
+  - name: worker
+    github:
+      repo: saifulhaque90/ApexCCMS
+      branch: master
+      deploy_on_push: true
+    dockerfile_path: Dockerfile.api
+    run_command: node scripts/worker.mjs
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    envs:
+      - key: NODE_ENV
+        scope: RUN_TIME
+        value: production
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: postgresql://${db.USERNAME}:${db.PASSWORD}@${db.HOSTNAME}:${db.PORT}/${db.DATABASE}?sslmode=no-verify
+      - key: JOB_POLL_MS
+        scope: RUN_TIME
+        value: "5000"
+      - key: JOB_STALE_AFTER_SECONDS
+        scope: RUN_TIME
+        value: "900"
+
+static_sites:
+  - name: web
+    github:
+      repo: saifulhaque90/ApexCCMS
+      branch: master
+      deploy_on_push: true
+    build_command: npm ci && npm run build
+    output_dir: dist
+    envs:
+      # Baked into the bundle at build time; the SPA calls ${VITE_API_URL}/api/...
+      # ${APP_URL} + the ingress rule below keeps API calls same-origin.
+      - key: VITE_API_URL
+        scope: BUILD_TIME
+        value: ${APP_URL}
+
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /api
+      component:
+        name: api
+    - match:
+        path:
+          prefix: /
+      component:
+        name: web
