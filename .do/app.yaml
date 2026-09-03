@@ -36,6 +36,23 @@ jobs:
         scope: RUN_TIME
         value: postgresql://${db.USERNAME}:${db.PASSWORD}@${db.HOSTNAME}:${db.PORT}/${db.DATABASE}?sslmode=no-verify
 
+  # Seeds baseline data after each deployment; db/seed.mjs is idempotent
+  # (ON CONFLICT upserts only). Do not pass the demo INSTITUTION_ID here —
+  # the script casts it to uuid.
+  - name: seed
+    kind: POST_DEPLOY
+    github:
+      repo: asifaziz01/ApexCCMS
+      branch: master
+      deploy_on_push: true
+    dockerfile_path: Dockerfile.api
+    run_command: node db/seed.mjs
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: postgresql://${db.USERNAME}:${db.PASSWORD}@${db.HOSTNAME}:${db.PORT}/${db.DATABASE}?sslmode=no-verify
+
 services:
   - name: api
     github:
@@ -65,19 +82,20 @@ services:
       - key: REQUIRE_AUTH
         scope: RUN_TIME
         value: "false"
-      # Actor subject used for unauthenticated writes in testing.
-      # Set to a subject that exists after `node db/seed.mjs` if needed.
+      # Actor subject used for unauthenticated writes in testing;
+      # matches the administrator user created by db/seed.mjs.
       - key: DEV_ACTOR_SUBJECT
         scope: RUN_TIME
-        value: dev-smoke-actor
+        value: seed:ccms-admin@northernstar.ca
       # Same-origin in this app (ingress routes /api to this service),
       # but the API still validates this value.
       - key: CORS_ORIGIN
         scope: RUN_TIME
         value: ${APP_URL}
+      # UUID of the NORTHERN-STAR institution created by the seed job.
       - key: INSTITUTION_ID
         scope: RUN_TIME
-        value: INS-000001
+        value: ca5dcc86-e351-4fe8-b3e6-a2bbbaa1e168
       - key: EVIDENCE_STORAGE_PROVIDER
         scope: RUN_TIME
         value: object-storage
