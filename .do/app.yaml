@@ -1,4 +1,4 @@
-# DigitalOcean App Platform spec — TESTING ENVIRONMENT ONLY.
+﻿# DigitalOcean App Platform spec — TESTING ENVIRONMENT ONLY.
 # Not production: uses a dev database (no PITR/backups), runs with
 # REQUIRE_AUTH=false, and disables TLS certificate verification to Postgres.
 # See docs/DEPLOYMENT_RUNBOOK.md before promoting anything to production.
@@ -23,7 +23,7 @@ jobs:
   - name: migrate
     kind: PRE_DEPLOY
     github:
-      repo: saifulhaque90/ApexCCMS
+      repo: asifaziz01/ApexCCMS
       branch: master
       deploy_on_push: true
     dockerfile_path: Dockerfile.api
@@ -39,7 +39,7 @@ jobs:
 services:
   - name: api
     github:
-      repo: saifulhaque90/ApexCCMS
+      repo: asifaziz01/ApexCCMS
       branch: master
       deploy_on_push: true
     dockerfile_path: Dockerfile.api
@@ -94,7 +94,7 @@ services:
 workers:
   - name: worker
     github:
-      repo: saifulhaque90/ApexCCMS
+      repo: asifaziz01/ApexCCMS
       branch: master
       deploy_on_push: true
     dockerfile_path: Dockerfile.api
@@ -118,7 +118,7 @@ workers:
 static_sites:
   - name: web
     github:
-      repo: saifulhaque90/ApexCCMS
+      repo: asifaziz01/ApexCCMS
       branch: master
       deploy_on_push: true
     build_command: npm ci && npm run build
