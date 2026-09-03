@@ -216,7 +216,7 @@ const server = http.createServer(async (req, res) => {
       if (body.details !== undefined && (!body.details || typeof body.details !== 'object' || Array.isArray(body.details))) return json(res, 400, { error: 'details must be a JSON object' });
       if (JSON.stringify(body.details || {}).length > 500000) return json(res, 413, { error: 'details exceeds the 500000 character limit' });
       if (databaseStatus().configured) {
-        const proposal = await createProposal({ institutionId: context?.institutionId || configuredInstitutionId, actorSubject: context?.subject || (requireAuth ? undefined : process.env.DEV_ACTOR_SUBJECT), proposalType: body.proposalType, title: body.title, academicUnitId: body.academicUnitId, effectiveTerm: body.effectiveTerm, details: body.details || {} });
+        const proposal = await createProposal({ institutionId: context?.institutionId || configuredInstitutionId, actorSubject: context?.subject || (requireAuth ? undefined : process.env.DEV_ACTOR_SUBJECT || 'seed:ccms-admin@northernstar.ca'), proposalType: body.proposalType, title: body.title, academicUnitId: body.academicUnitId, effectiveTerm: body.effectiveTerm, details: body.details || {} });
         await audit('Proposal submitted', 'Proposal', proposal.id, null, proposal, 'Submitted from New Course Proposal wizard', correlationId);
         return json(res, 201, proposal);
       }
