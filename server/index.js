@@ -181,7 +181,7 @@ const server = http.createServer(async (req, res) => {
       return job ? json(res, 200, job) : json(res, 404, { error: 'Job not found' });
     }
     if (req.method === 'GET' && url.pathname === '/api/proposals') {
-      if (databaseStatus().configured) return json(res, 200, { proposals: await listProposals(context?.institutionId || institution.id), storage: 'postgresql' });
+      if (databaseStatus().configured) return json(res, 200, { proposals: await listProposals(context?.institutionId || configuredInstitutionId), storage: 'postgresql' });
       return json(res, 200, { proposals, storage: 'in-memory-demo' });
     }
     if (req.method === 'GET' && url.pathname === '/api/governance/routes') return json(res, 200, { source: 'authorized-governance-route-read-model', routes: [{ id: 'WF-00001', proposalType: 'New Course', name: 'Default Curriculum Approval Route', status: 'Active', steps: ['Department Curriculum Committee', 'Faculty Curriculum Committee', 'Academic Programs Committee', 'Senate Curriculum Committee', 'Senate'] }] });
@@ -198,7 +198,7 @@ const server = http.createServer(async (req, res) => {
       return proposal ? json(res, 200, proposal) : json(res, 404, { error: 'Proposal not found' });
     }
     if (req.method === 'GET' && url.pathname === '/api/publications') {
-      if (databaseStatus().configured) return json(res, 200, { publications: await listPublications(context?.institutionId || institution.id), storage: 'postgresql' });
+      if (databaseStatus().configured) return json(res, 200, { publications: await listPublications(context?.institutionId || configuredInstitutionId), storage: 'postgresql' });
       return json(res, 200, { publications, storage: 'in-memory-demo' });
     }
     if (req.method === 'GET' && url.pathname === '/api/consumer') {
