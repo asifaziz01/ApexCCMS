@@ -144,6 +144,7 @@ function App() {
   const [active, setActive] = useState('Dashboard');
   const [activeArea, setActiveArea] = useState('global');
   const [collapsed, setCollapsed] = useState(false);
+  const [collapsedSections, setCollapsedSections] = useState({});
   const [locale, setLocale] = useState(() => localStorage.getItem('ccms-locale') || 'en');
   const isDashboard = active === 'Dashboard';
   useEffect(() => { localStorage.setItem('ccms-locale', locale); document.documentElement.lang = locale; }, [locale]);
@@ -187,8 +188,10 @@ function App() {
       <nav>
         <NavItem label={navLabel('Dashboard', locale)} Icon={LayoutDashboard} active={active === 'Dashboard' && activeArea === 'global'} onClick={() => { setActiveArea('global'); setActive('Dashboard'); }} />
         {sections.map(([heading, items]) => <div className="nav-section" key={heading}>
-          <div className="nav-heading">{sectionLabel(heading, locale)}</div>
-          {items.map(([label, Icon]) => <NavItem key={`${heading}-${label}`} label={navLabel(label, locale)} Icon={Icon} active={active === label && (label !== 'Dashboard' || activeArea === heading)} onClick={() => { setActiveArea(heading); setActive(label); }} />)}
+          <button type="button" className="nav-heading" aria-expanded={!collapsedSections[heading]} aria-controls={`nav-section-${heading.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`} onClick={() => setCollapsedSections(current => ({ ...current, [heading]: !current[heading] }))}><span>{sectionLabel(heading, locale)}</span><ChevronDown size={13}/></button>
+          {!collapsedSections[heading] && <div id={`nav-section-${heading.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`}>
+            {items.map(([label, Icon]) => <NavItem key={`${heading}-${label}`} label={navLabel(label, locale)} Icon={Icon} active={active === label && (label !== 'Dashboard' || activeArea === heading)} onClick={() => { setActiveArea(heading); setActive(label); }} />)}
+          </div>}
         </div>)}
       </nav>
       <div className="sidebar-footer"><CircleHelp size={17}/><span>Help & Support</span><ChevronRight size={15}/></div>
