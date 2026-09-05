@@ -56,3 +56,4 @@
 .nav-heading{width:100%;border:0;background:transparent;text-align:left;display:flex;align-items:center;justify-content:space-between;cursor:pointer;font:inherit}
 .audit-head,.audit-row{grid-template-columns:1fr 1.4fr 1.2fr 1fr 1.3fr}
 .version-head,.version-row{grid-template-columns:1fr 1.1fr 1.3fr 1.5fr 1.2fr}
+.program-button{width:100%;border:0;border-bottom:1px solid #e5ebf3;background:#fff;text-align:left;cursor:pointer;color:inherit;font:inherit}.program-button:hover{background:#f7faff}
