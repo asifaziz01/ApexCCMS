@@ -125,7 +125,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && programDetailMatch) {
       const program = catalogue.programs.records.find(item => item.id === programDetailMatch[1]);
       if (!program) return json(res, 404, { error: 'Program not found' });
-      if (url.pathname.endsWith('/versions')) return json(res, 200, { programId: program.id, versions: [{ id: `${program.id}-V${program.version.replace('v','')}`, version: program.version, status: program.status === 'Active' ? 'Official' : 'Proposed', effectiveTerm: program.effectiveTerm, name: program.title }] });
+      if (url.pathname.endsWith('/versions')) { const current = program.version.replace('v',''); const official = program.status === 'Active' ? current : '1.0'; const proposed = program.status === 'Active' ? (Number(current)+0.1).toFixed(1) : current; return json(res, 200, { programId: program.id, versions: [{ id: `${program.id}-V2.0`, version: 'v2.0', status: 'Historical', effectiveTerm: 'Fall 2024', name: program.title }, { id: `${program.id}-V${official}`, version: `v${official}`, status: 'Official', effectiveTerm: program.status === 'Active' ? program.effectiveTerm : 'Fall 2025', name: program.title }, { id: `${program.id}-V${proposed}`, version: `v${proposed}`, status: 'Proposed', effectiveTerm: 'Fall 2027', name: program.title }] }); }
       return json(res, 200, { storage: databaseStatus().configured ? 'postgresql' : 'in-memory-demo', source: 'authorized-live-program-read-model', program });
     }
     if (req.method === 'GET' && url.pathname === '/api/reference-data') return json(res, 200, { storage: databaseStatus().configured ? 'postgresql' : 'in-memory-demo', source: 'authorized-live-reference-read-model', referenceData });
