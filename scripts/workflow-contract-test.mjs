@@ -19,6 +19,10 @@ for (const proposalType of types) {
   if (!firstWorkflow.workflow || firstWorkflow.workflow.id !== secondWorkflow.workflow.id) throw new Error(`${proposalType} created duplicate or missing workflow`);
   if (firstWorkflow.steps.length !== 4 || firstWorkflow.steps[0].committee !== 'Department Curriculum Committee' || firstWorkflow.steps[0].status !== 'IN_PROGRESS') throw new Error(`${proposalType} route was not instantiated correctly`);
   if (!firstWorkflow.workItems.some(item => item.proposalId === proposal.id && item.committee === 'Department Curriculum Committee')) throw new Error(`${proposalType} approval work item was not created`);
+  const reviewerQueue = await request('/api/review-work-items?reviewerId=USR-000003');
+  if (!reviewerQueue.workItems.some(item => item.proposalId === proposal.id)) throw new Error(`${proposalType} reviewer work item was not visible to USR-000003`);
+  const unauthorizedQueue = await request('/api/review-work-items?reviewerId=USR-000001');
+  if (unauthorizedQueue.workItems.some(item => item.proposalId === proposal.id)) throw new Error(`${proposalType} leaked to unauthorized reviewer`);
   const approvals = await request('/api/approvals');
   if (!approvals.workItems.some(item => item.proposalId === proposal.id)) throw new Error(`${proposalType} is missing from approvals`);
   const committee = await request('/api/committees/Department%20Curriculum%20Committee/workload');
@@ -26,6 +30,8 @@ for (const proposalType of types) {
   await request(`/api/proposals/${proposal.id}/return`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   const returnedWorkflow = await request(`/api/proposals/${proposal.id}/workflow`);
   if (returnedWorkflow.workflow.status !== 'PAUSED' || returnedWorkflow.steps[0].status !== 'RETURNED') throw new Error(`${proposalType} return did not pause the workflow`);
+  const returnedQueue = await request('/api/review-work-items?reviewerId=USR-000003');
+  if (returnedQueue.workItems.some(item => item.proposalId === proposal.id)) throw new Error(`${proposalType} returned proposal retained an active reviewer item`);
   await request(`/api/proposals/${proposal.id}/resubmit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   const resubmittedWorkflow = await request(`/api/proposals/${proposal.id}/workflow`);
   if (resubmittedWorkflow.workflow.status !== 'ACTIVE' || resubmittedWorkflow.steps[0].status !== 'IN_PROGRESS') throw new Error(`${proposalType} resubmission did not re-enter the current stage`);
@@ -34,8 +40,12 @@ for (const proposalType of types) {
 
 let current = created[0];
 for (let step = 1; step <= 4; step += 1) {
+  const beforeAdvanceQueue = await request('/api/review-work-items?reviewerId=USR-000003');
   current = await request(`/api/proposals/${current.id}/advance`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   const workflow = await request(`/api/proposals/${current.id}/workflow`);
+  const afterAdvanceQueue = await request('/api/review-work-items?reviewerId=USR-000003');
+  if (afterAdvanceQueue.workItems.some(item => item.proposalId === current.id && item.workflowStepInstanceId === beforeAdvanceQueue.workItems.find(item => item.proposalId === current.id)?.workflowStepInstanceId)) throw new Error('Completed reviewer item remained active after advancing');
+  if (step < 4 && !afterAdvanceQueue.workItems.some(item => item.proposalId === current.id)) throw new Error('Next active stage reviewer item was not created');
   if (step < 4 && workflow.workflow.currentStep !== step + 1) throw new Error('Approval did not advance exactly one configured stage');
 }
 if (current.status !== 'Approved') throw new Error('Final approval did not complete the workflow');

@@ -92,7 +92,7 @@ function useLiveInstitution(fallback) {
 }
 function useLiveReviewRows(fallback) {
   const [records, setRecords] = useState(null);
-  useEffect(() => { let active = true; fetch(`${apiBase}/api/review-work-items`).then(response => response.ok ? response.json() : null).then(data => { if (active && data) setRecords((data.workItems || []).map(row => [row.proposalNo || row.proposalId, `${row.proposalType || 'Curriculum'} · ${row.title || 'Curriculum proposal'}`, row.committee || row.currentStage || 'Governance review', row.status || 'Pending', 'Submitted', 'risk'])); }).catch(() => {}); return () => { active = false; }; }, []);
+  useEffect(() => { let active = true; const reviewerId = localStorage.getItem('ccms-demo-reviewer'); const query = reviewerId ? `?reviewerId=${encodeURIComponent(reviewerId)}` : ''; fetch(`${apiBase}/api/review-work-items${query}`).then(response => response.ok ? response.json() : null).then(data => { if (active && data) setRecords((data.workItems || []).map(row => [row.proposalNo || row.proposalId, `${row.proposalType || 'Curriculum'} · ${row.title || 'Curriculum proposal'}`, row.committee || row.currentStage || 'Governance review', row.status || 'Pending', row.dueAt || 'Due today', 'risk'])); }).catch(() => {}); return () => { active = false; }; }, []);
   return records || fallback;
 }
 function useLiveApprovalRows(fallback) {
@@ -153,7 +153,9 @@ function App() {
   const [locale, setLocale] = useState(() => localStorage.getItem('ccms-locale') || 'en');
   const isDashboard = active === 'Dashboard';
   useEffect(() => { localStorage.setItem('ccms-locale', locale); document.documentElement.lang = locale; }, [locale]);
+  useEffect(() => { if (active !== 'My Reviews') return undefined; const reviewerId = localStorage.getItem('ccms-demo-reviewer'); const query = reviewerId ? `?reviewerId=${encodeURIComponent(reviewerId)}` : ''; let live = true; fetch(`${apiBase}/api/review-work-items${query}`).then(response => response.ok ? response.json() : null).then(data => { if (!live || !data) return; const count = (data.workItems || []).length; const metric = document.querySelector('.admin-metrics .metric strong'); if (metric) metric.textContent = String(count); const recordCount = document.querySelector('.review-detail')?.parentElement?.querySelector('.record-count'); if (recordCount) recordCount.textContent = `${count} assigned reviews`; }).catch(() => {}); return () => { live = false; }; }, [active]);
   useEffect(() => { window.__CCMS_SET_ACTIVE__ = setActive; return () => { delete window.__CCMS_SET_ACTIVE__; }; }, []);
+  useEffect(() => { if (active !== 'My Reviews') return undefined; const reviewerId = localStorage.getItem('ccms-demo-reviewer'); const query = reviewerId ? `?reviewerId=${encodeURIComponent(reviewerId)}` : ''; let live = true; fetch(`${apiBase}/api/review-work-items${query}`).then(response => response.ok ? response.json() : null).then(data => { if (!live || !data) return; const count = (data.workItems || []).length; const recordCount = document.querySelector('.panel .record-count'); if (recordCount) recordCount.textContent = `${count} assigned reviews`; }).catch(() => {}); return () => { live = false; }; }, [active]);
   useEffect(() => {
     const breadcrumb = document.querySelector('.breadcrumbs');
     if (!breadcrumb) return undefined;
@@ -174,12 +176,13 @@ function App() {
     menu.className = 'profile-menu';
     menu.setAttribute('role', 'dialog');
     menu.setAttribute('aria-label', 'User profile');
-    menu.innerHTML = '<div class="profile-menu-head"><div class="avatar">AK</div><div><strong>Aisha Khan</strong><span>Curriculum Administrator</span></div></div><div class="profile-menu-row"><span>Institution</span><strong>Northern Star College</strong></div><div class="profile-menu-row"><span>Scope</span><strong>Institution-wide</strong></div><div class="profile-menu-row"><span>Account status</span><strong class="profile-active">Active</strong></div><button class="profile-menu-close" type="button">Close profile</button>';
+    menu.innerHTML = '<div class="profile-menu-head"><div class="avatar">AK</div><div><strong>Aisha Khan</strong><span>Curriculum Administrator</span></div></div><div class="profile-menu-row"><span>Institution</span><strong>Northern Star College</strong></div><div class="profile-menu-row"><span>Scope</span><strong>Institution-wide</strong></div><div class="profile-menu-row"><span>Account status</span><strong class="profile-active">Active</strong></div><button class="profile-reviewer-switch" type="button">Switch to Morgan Lee reviewer</button><button class="profile-menu-close" type="button">Close profile</button>';
     profile.parentElement.appendChild(menu);
     const close = () => { menu.classList.remove('open'); profile.setAttribute('aria-expanded', 'false'); };
     const toggle = event => { event.stopPropagation(); menu.classList.toggle('open'); profile.setAttribute('aria-expanded', menu.classList.contains('open') ? 'true' : 'false'); };
     profile.addEventListener('click', toggle);
     menu.querySelector('.profile-menu-close').addEventListener('click', close);
+    menu.querySelector('.profile-reviewer-switch').addEventListener('click', () => { localStorage.setItem('ccms-demo-reviewer', 'USR-000003'); window.location.reload(); });
     const outside = event => { if (!menu.contains(event.target) && !profile.contains(event.target)) close(); };
     document.addEventListener('click', outside);
     return () => { profile.removeEventListener('click', toggle); menu.remove(); document.removeEventListener('click', outside); };

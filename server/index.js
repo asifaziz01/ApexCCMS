@@ -212,7 +212,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/review-work-items') {
       const scope = context?.institutionId || configuredInstitutionId;
       if (databaseStatus().configured) return json(res, 200, { workItems: context?.subject ? await listMyApprovalWorkItems(scope, context.subject) : [], storage: 'postgresql' });
-      const assignee = context?.subject ? 'USR-000001' : 'USR-000001';
+      const requestedReviewer = !requireAuth ? url.searchParams.get('reviewerId') : null;
+      const assignee = requestedReviewer && users.some(user => user.id === requestedReviewer && user.status === 'Active') ? requestedReviewer : (context?.subject ? 'USR-000001' : 'USR-000001');
       return json(res, 200, { workItems: approvalWorkItems.filter(item => item.assigneeUserId === assignee && ['PENDING', 'IN_PROGRESS'].includes(item.status)), storage: 'in-memory-demo' });
     }
     const committeeWorkloadMatch = url.pathname.match(/^\/api\/committees\/([^/]+)\/workload$/);
