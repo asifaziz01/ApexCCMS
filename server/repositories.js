@@ -42,19 +42,19 @@ export async function listUsers(institutionId) {
 
 function uuid(value) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) ? value : null; }
 
-export async function createProposal({ institutionId, actorSubject, proposalType, title, academicUnitId, effectiveTerm, details = {} }) {
+export async function createProposal({ institutionId, actorSubject, proposalType, title, academicUnitId, effectiveTerm, details = {}, itemType: requestedItemType, stableCode, proposedVersion = 'v1.0' }) {
   const scope = institutionScope(institutionId);
   const actor = await query('SELECT id FROM users WHERE institution_id = $1 AND oidc_subject = $2 AND status = $3', [scope, actorSubject, 'Active']);
   if (!actor.rows[0]) throw Object.assign(new Error('Authenticated user is not provisioned for this institution'), { statusCode: 403 });
   if (!uuid(academicUnitId)) throw Object.assign(new Error('academicUnitId must be a database Academic Unit UUID'), { statusCode: 400 });
   const unit = await query('SELECT id FROM academic_units WHERE institution_id = $1 AND id = $2 AND effective_to IS NULL', [scope, academicUnitId]);
   if (!unit.rows[0]) throw Object.assign(new Error('Academic Unit is not in the institution scope'), { statusCode: 400 });
-  const itemType = proposalType.toLowerCase().includes('program') ? 'Program' : proposalType.toLowerCase().includes('credential') ? 'Credential' : 'Course';
+  const itemType = requestedItemType || (proposalType.toLowerCase().includes('program') ? 'Program' : proposalType.toLowerCase().includes('credential') ? 'Credential' : 'Course');
   return withTransaction(async client => {
-    const item = await client.query(`INSERT INTO curriculum_items (institution_id, item_type, stable_code, owning_unit_id) VALUES ($1,$2,$3,$4) RETURNING id`, [scope, itemType, `PENDING-${randomCode()}`, uuid(academicUnitId)]);
+    const item = await client.query(`INSERT INTO curriculum_items (institution_id, item_type, stable_code, owning_unit_id) VALUES ($1,$2,$3,$4) RETURNING id, stable_code`, [scope, itemType, stableCode || `PENDING-${randomCode()}`, uuid(academicUnitId)]);
     const version = await client.query(`INSERT INTO curriculum_versions (institution_id, curriculum_item_id, version_no, lifecycle_state, title, effective_term, payload, created_by) VALUES ($1,$2,1,'Proposed',$3,$4,$5,$6) RETURNING id`, [scope, item.rows[0].id, title, effectiveTerm, JSON.stringify(details), actor.rows[0].id]);
     const proposal = await client.query(`INSERT INTO proposals (institution_id, proposal_no, proposal_type, curriculum_item_id, proposed_version_id, status, current_stage, created_by, submitted_at) VALUES ($1,$2,$3,$4,$5,'Submitted','Department Curriculum Committee',$6,now()) RETURNING id, proposal_no, proposal_type, status, current_stage, created_by, submitted_at, proposed_version_id`, [scope, `PROP-${randomCode()}`, proposalType, item.rows[0].id, version.rows[0].id, actor.rows[0].id]);
-    return { ...proposal.rows[0], id: proposal.rows[0].id, title, academicUnitId, effectiveTerm, details, proposedVersion: 'v1.0' };
+    return { ...proposal.rows[0], id: proposal.rows[0].id, proposalNo: proposal.rows[0].proposal_no, title, academicUnitId, effectiveTerm, details, requirementId: itemType === 'Requirement' ? item.rows[0].stable_code : undefined, proposedVersion: itemType === 'Requirement' ? `${item.rows[0].stable_code}-V1.0` : proposedVersion };
   });
 }
 
@@ -90,9 +90,11 @@ export async function promoteProposal(institutionId, proposalId) {
   });
 }
 
-export async function listProposals(institutionId) {
+export async function listProposals(institutionId, actorSubject = null) {
   const scope = institutionScope(institutionId);
-  const { rows } = await query(`SELECT id, proposal_no, proposal_type, status, current_stage, created_by, submitted_at, completed_at FROM proposals WHERE institution_id = $1 ORDER BY submitted_at DESC NULLS LAST`, [scope]);
+  const params = actorSubject ? [scope, actorSubject] : [scope];
+  const actorClause = actorSubject ? ' AND u.oidc_subject = $2' : '';
+  const { rows } = await query(`SELECT p.id, p.proposal_no AS "proposalNo", p.proposal_type AS "proposalType", p.status, p.current_stage AS "currentStage", p.created_by AS "createdBy", p.submitted_at AS "submittedAt", p.completed_at AS "completedAt", ci.stable_code AS "requirementId", cv.title, cv.effective_term AS "effectiveTerm", cv.payload AS details FROM proposals p LEFT JOIN curriculum_items ci ON ci.id = p.curriculum_item_id LEFT JOIN curriculum_versions cv ON cv.id = p.proposed_version_id LEFT JOIN users u ON u.id = p.created_by WHERE p.institution_id = $1${actorClause} ORDER BY p.submitted_at DESC NULLS LAST`, params);
   return rows;
 }
 

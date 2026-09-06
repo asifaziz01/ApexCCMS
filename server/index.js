@@ -181,8 +181,9 @@ const server = http.createServer(async (req, res) => {
       return job ? json(res, 200, job) : json(res, 404, { error: 'Job not found' });
     }
     if (req.method === 'GET' && url.pathname === '/api/proposals') {
-      if (databaseStatus().configured) return json(res, 200, { proposals: await listProposals(context?.institutionId || configuredInstitutionId), storage: 'postgresql' });
-      return json(res, 200, { proposals, storage: 'in-memory-demo' });
+      if (databaseStatus().configured) return json(res, 200, { proposals: await listProposals(context?.institutionId || configuredInstitutionId, context?.subject || null), storage: 'postgresql' });
+      const actorSubject = context?.subject || (requireAuth ? null : 'seed:ccms-admin@northernstar.ca');
+      return json(res, 200, { proposals: actorSubject ? proposals.filter(item => item.createdBySubject === actorSubject || !item.createdBySubject) : proposals, storage: 'in-memory-demo' });
     }
     if (req.method === 'GET' && url.pathname === '/api/governance/routes') return json(res, 200, { source: 'authorized-governance-route-read-model', routes: [{ id: 'WF-00001', proposalType: 'New Course', name: 'Default Curriculum Approval Route', status: 'Active', steps: ['Department Curriculum Committee', 'Faculty Curriculum Committee', 'Academic Programs Committee', 'Senate Curriculum Committee', 'Senate'] }] });
     const approvalHistoryMatch = url.pathname.match(/^\/api\/proposals\/([^/]+)\/approval-history$/);
@@ -209,18 +210,19 @@ const server = http.createServer(async (req, res) => {
       enforce(context, ['Curriculum Creator', 'Curriculum Administrator']);
       const body = await readBody(req);
       if (!body.proposalType || !body.title || !body.academicUnitId || !body.effectiveTerm) return json(res, 400, { error: 'proposalType, title, academicUnitId, and effectiveTerm are required' });
-      const proposalTypes = ['New Course', 'Course Modification', 'Course Discontinuation', 'New Program', 'Program Modification', 'Program Suspension', 'Program Closure', 'New Credential', 'Credential Change'];
+      const proposalTypes = ['New Course', 'Course Modification', 'Course Discontinuation', 'New Program', 'Program Modification', 'Program Suspension', 'Program Closure', 'New Credential', 'Credential Change', 'New Requirement'];
       if (!proposalTypes.includes(body.proposalType)) return json(res, 400, { error: 'proposalType is not supported' });
       const units = databaseStatus().configured ? await listAcademicUnits(context?.institutionId || configuredInstitutionId) : academicUnits;
       if (!units.some(unit => unit.id === body.academicUnitId)) return json(res, 400, { error: 'academicUnitId must reference an existing Academic Unit' });
       if (body.details !== undefined && (!body.details || typeof body.details !== 'object' || Array.isArray(body.details))) return json(res, 400, { error: 'details must be a JSON object' });
       if (JSON.stringify(body.details || {}).length > 500000) return json(res, 413, { error: 'details exceeds the 500000 character limit' });
       if (databaseStatus().configured) {
-        const proposal = await createProposal({ institutionId: context?.institutionId || configuredInstitutionId, actorSubject: context?.subject || (requireAuth ? undefined : process.env.DEV_ACTOR_SUBJECT || 'seed:ccms-admin@northernstar.ca'), proposalType: body.proposalType, title: body.title, academicUnitId: body.academicUnitId, effectiveTerm: body.effectiveTerm, details: body.details || {} });
+        const proposal = await createProposal({ institutionId: context?.institutionId || configuredInstitutionId, actorSubject: context?.subject || (requireAuth ? undefined : process.env.DEV_ACTOR_SUBJECT || 'seed:ccms-admin@northernstar.ca'), proposalType: body.proposalType, title: body.title, academicUnitId: body.academicUnitId, effectiveTerm: body.effectiveTerm, details: body.details || {}, itemType: body.proposalType === 'New Requirement' ? 'Requirement' : undefined, stableCode: body.requirementId, proposedVersion: body.proposedVersion });
         await audit('Proposal submitted', 'Proposal', proposal.id, null, proposal, 'Submitted from New Course Proposal wizard', correlationId);
         return json(res, 201, proposal);
       }
-      const proposal = { id: `PROP-${String(proposals.length + 185).padStart(6, '0')}`, proposalType: body.proposalType, title: body.title, academicUnitId: body.academicUnitId, effectiveTerm: body.effectiveTerm, details: body.details || {}, proposedVersion: 'v1.0', status: 'Submitted', createdBy: 'USR-000001', submittedAt: new Date().toISOString() };
+      const requirementId = body.proposalType === 'New Requirement' ? (body.requirementId || `REQ-NEW-${String(proposals.length + 1).padStart(4, '0')}`) : undefined;
+      const proposal = { id: `PROP-${String(proposals.length + 185).padStart(6, '0')}`, proposalType: body.proposalType, title: body.title, academicUnitId: body.academicUnitId, effectiveTerm: body.effectiveTerm, details: body.details || {}, requirementId, proposedVersion: body.proposalType === 'New Requirement' ? `${requirementId}-V1.0` : 'v1.0', status: 'Submitted', currentStage: 'Department Curriculum Committee', createdBy: 'USR-000001', createdBySubject: context?.subject || 'seed:ccms-admin@northernstar.ca', submittedAt: new Date().toISOString() };
       proposals.push(proposal);
       await audit('Proposal submitted', 'Proposal', proposal.id, null, proposal, 'Submitted from New Course Proposal wizard', correlationId);
       return json(res, 201, proposal);
