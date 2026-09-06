@@ -23,6 +23,7 @@
     "test:smoke": "node scripts/smoke-test.mjs",
     "test:platform": "node scripts/platform-smoke-test.mjs",
     "test:server": "node scripts/server-regression-test.mjs",
+    "test:workflow": "node scripts/workflow-contract-test.mjs",
     "test:production-errors": "node scripts/production-error-test.mjs",
     "test:deployment-contract": "node scripts/deployment-contract-test.mjs",
     "preview": "vite preview --host 0.0.0.0"

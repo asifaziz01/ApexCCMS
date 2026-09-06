@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { databaseStatus, databaseReady, closeDatabase } from './db.js';
 import { authStatus, authenticateRequest } from './auth.js';
-import { getInstitution, listAcademicUnits, renameAcademicUnit, listUsers, listProposals, getProposal, listPublications, listPublishedConsumerRecords, listAuditEvents, listEvidenceItems, createEvidenceItem, createProposal, advanceProposal, promoteProposal, queuePublication, publishPublication, appendAuditEvent } from './repositories.js';
+import { getInstitution, listAcademicUnits, renameAcademicUnit, listUsers, listProposals, getProposal, getWorkflow, listApprovalWorkItems, listPublications, listPublishedConsumerRecords, listAuditEvents, listEvidenceItems, createEvidenceItem, createProposal, advanceProposal, promoteProposal, queuePublication, publishPublication, appendAuditEvent } from './repositories.js';
 import { authorize } from './authorization.js';
 import { enqueueJob, listJobs, getJob } from './jobs.js';
 
@@ -21,8 +21,25 @@ const users = [
 ];
 const auditEvents = [];
 const proposals = [];
+const workflowInstances = [];
+const workflowStepInstances = [];
+const approvalWorkItems = [];
 const publications = [];
 const evidenceItems = [];
+const approvalRoute = ['Department Curriculum Committee', 'Faculty Curriculum Committee', 'Academic Programs Committee', 'Senate'];
+
+function instantiateInMemoryWorkflow(proposal) {
+  const existing = workflowInstances.find(item => item.proposalId === proposal.id);
+  if (existing) return existing;
+  const workflow = { id: `WF-${String(workflowInstances.length + 1).padStart(6, '0')}`, proposalId: proposal.id, status: 'ACTIVE', currentStep: 1, currentStage: approvalRoute[0], createdAt: new Date().toISOString() };
+  workflowInstances.push(workflow);
+  approvalRoute.forEach((committee, index) => workflowStepInstances.push({ id: `${workflow.id}-STEP-${index + 1}`, workflowInstanceId: workflow.id, proposalId: proposal.id, sequence: index + 1, committee, status: index === 0 ? 'IN_PROGRESS' : 'WAITING' }));
+  approvalWorkItems.push({ id: `AWI-${String(approvalWorkItems.length + 1).padStart(6, '0')}`, workflowInstanceId: workflow.id, workflowStepInstanceId: `${workflow.id}-STEP-1`, proposalId: proposal.id, proposalNo: proposal.id, proposalType: proposal.proposalType, committee: approvalRoute[0], assigneeUserId: 'USR-000003', status: 'PENDING' });
+  proposal.workflowInstanceId = workflow.id;
+  proposal.currentStage = workflow.currentStage;
+  proposal.workflowStatus = workflow.status;
+  return workflow;
+}
 const catalogue = {
   courses: { total: 1248, records: [{ id: 'CRS-000481', code: 'COMP 481', title: 'Machine Learning', academicUnit: 'School of Technology', status: 'Active', version: 'v2.1', effectiveTerm: 'Fall 2026' }, { id: 'CRS-000392', code: 'BUS 210', title: 'Financial Accounting', academicUnit: 'School of Business & Commerce', status: 'Active', version: 'v2.1', effectiveTerm: 'Fall 2026' }, { id: 'CRS-000517', code: 'HLTH 120', title: 'Foundations of Health', academicUnit: 'School of Health Sciences', status: 'In Review', version: 'v1.0', effectiveTerm: 'Winter 2027' }] },
   programs: { total: 145, records: [{ id: 'PRG-000184', code: 'BUS-ADM-DIP', title: 'Business Administration', academicUnit: 'School of Business & Commerce', credential: 'Diploma', status: 'Active', version: 'v3.0', effectiveTerm: 'Fall 2026' }, { id: 'PRG-000231', code: 'CYBR-ADV-DIP', title: 'Cyber Security', academicUnit: 'School of Technology', credential: 'Advanced Diploma', status: 'Active', version: 'v2.0', effectiveTerm: 'Winter 2027' }, { id: 'PRG-000267', code: 'DMKT-GC', title: 'Digital Marketing', academicUnit: 'School of Business & Commerce', credential: 'Graduate Certificate', status: 'Review', version: 'v1.0', effectiveTerm: 'Fall 2026' }] },
@@ -49,14 +66,15 @@ const configuredInstitutionId = process.env.INSTITUTION_ID || institution.id;
 const rateBuckets = new Map();
 const rateLimitPerMinute = Math.max(10, Number(process.env.RATE_LIMIT_PER_MINUTE || 120));
 const maxBodyBytes = Math.min(10_485_760, Math.max(16_384, Number(process.env.MAX_BODY_BYTES || 1_048_576)));
-const allowedOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173';
-const secureCorsOrigin = process.env.NODE_ENV !== 'production' || /^https:\/\/[^*\s]+$/i.test(allowedOrigin);
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:5174').split(',').map(origin => origin.trim()).filter(Boolean);
+const allowedOrigin = allowedOrigins[0] || 'http://localhost:5173';
+const secureCorsOrigin = process.env.NODE_ENV !== 'production' || allowedOrigins.every(origin => /^https:\/\/[^*\s]+$/i.test(origin));
 const evidenceStorageProvider = process.env.EVIDENCE_STORAGE_PROVIDER || '';
 const dataResidencyRegion = process.env.DATA_RESIDENCY_REGION || '';
 const isUuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const metrics = { startedAt: new Date().toISOString(), requests: 0, errors: 0, byStatus: {} };
 
-function json(res, status, payload) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': allowedOrigin, 'Vary': 'Origin', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(payload)); }
+function json(res, status, payload) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': res.corsOrigin || allowedOrigin, 'Vary': 'Origin', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=()', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(payload)); }
 async function audit(action, objectType, objectId, previousValue, newValue, reason = 'Local foundation mutation', correlationId) {
   const privacyClassification = objectType === 'EvidenceItem' ? 'Confidential' : 'Internal';
   const event = { id: `AUD-${String(auditEvents.length + 1).padStart(6, '0')}`, actor: 'USR-000001', scope: configuredInstitutionId, action, objectType, objectId, previousValue, newValue, privacyClassification, reason, occurredAt: new Date().toISOString() };
@@ -73,7 +91,8 @@ function validStorageKey(value) { return typeof value === 'string' && value.leng
 function publicEvidence(item) { return item ? { ...item, storageKey: '[protected]' } : item; }
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': allowedOrigin, 'Access-Control-Allow-Headers': 'Content-Type, Idempotency-Key, Authorization', 'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS', 'Vary': 'Origin' }); return res.end(); }
+  res.corsOrigin = allowedOrigins.includes(req.headers.origin) ? req.headers.origin : allowedOrigin;
+  if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': res.corsOrigin, 'Access-Control-Allow-Headers': 'Content-Type, Idempotency-Key, Authorization', 'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS', 'Vary': 'Origin' }); return res.end(); }
   const url = new URL(req.url, 'http://localhost');
   const correlationId = req.headers['x-correlation-id'] || randomUUID();
   res.setHeader('X-Correlation-ID', correlationId);
@@ -185,7 +204,26 @@ const server = http.createServer(async (req, res) => {
       const actorSubject = context?.subject || (requireAuth ? null : 'seed:ccms-admin@northernstar.ca');
       return json(res, 200, { proposals: actorSubject ? proposals.filter(item => item.createdBySubject === actorSubject || !item.createdBySubject) : proposals, storage: 'in-memory-demo' });
     }
-    if (req.method === 'GET' && url.pathname === '/api/governance/routes') return json(res, 200, { source: 'authorized-governance-route-read-model', routes: [{ id: 'WF-00001', proposalType: 'New Course', name: 'Default Curriculum Approval Route', status: 'Active', steps: ['Department Curriculum Committee', 'Faculty Curriculum Committee', 'Academic Programs Committee', 'Senate Curriculum Committee', 'Senate'] }] });
+    if (req.method === 'GET' && url.pathname === '/api/approvals') {
+      const scope = context?.institutionId || configuredInstitutionId;
+      if (databaseStatus().configured) return json(res, 200, { workItems: await listApprovalWorkItems(scope), storage: 'postgresql' });
+      return json(res, 200, { workItems: approvalWorkItems.filter(item => item.status === 'PENDING' || item.status === 'IN_PROGRESS'), storage: 'in-memory-demo' });
+    }
+    const committeeWorkloadMatch = url.pathname.match(/^\/api\/committees\/([^/]+)\/workload$/);
+    if (req.method === 'GET' && committeeWorkloadMatch) {
+      const committee = decodeURIComponent(committeeWorkloadMatch[1]);
+      const scope = context?.institutionId || configuredInstitutionId;
+      if (databaseStatus().configured) return json(res, 200, { committee, workItems: await listApprovalWorkItems(scope, { committeeName: committee }), storage: 'postgresql' });
+      return json(res, 200, { committee, workItems: approvalWorkItems.filter(item => item.committee === committee && ['PENDING', 'IN_PROGRESS'].includes(item.status)), storage: 'in-memory-demo' });
+    }
+    const workflowMatch = url.pathname.match(/^\/api\/proposals\/([^/]+)\/workflow$/);
+    if (req.method === 'GET' && workflowMatch) {
+      const scope = context?.institutionId || configuredInstitutionId;
+      if (databaseStatus().configured) { const workflow = await getWorkflow(scope, workflowMatch[1]); return workflow ? json(res, 200, { ...workflow, storage: 'postgresql' }) : json(res, 404, { error: 'Workflow instance not found' }); }
+      const workflow = workflowInstances.find(item => item.proposalId === workflowMatch[1]);
+      return workflow ? json(res, 200, { workflow, steps: workflowStepInstances.filter(item => item.workflowInstanceId === workflow.id), workItems: approvalWorkItems.filter(item => item.workflowInstanceId === workflow.id), storage: 'in-memory-demo' }) : json(res, 404, { error: 'Workflow instance not found' });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/governance/routes') return json(res, 200, { source: 'authorized-governance-route-read-model', routes: ['New Requirement','New Course','Course Modification','New Program','Program Modification','New Credential'].map((proposalType,index) => ({ id: `WF-0000${index + 1}`, proposalType, name: 'Default Curriculum Approval Route', status: 'Active', steps: approvalRoute })) });
     const approvalHistoryMatch = url.pathname.match(/^\/api\/proposals\/([^/]+)\/approval-history$/);
     if (req.method === 'GET' && approvalHistoryMatch) {
       const scope = context?.institutionId || configuredInstitutionId;
@@ -223,6 +261,7 @@ const server = http.createServer(async (req, res) => {
       }
       const requirementId = body.proposalType === 'New Requirement' ? (body.requirementId || `REQ-NEW-${String(proposals.length + 1).padStart(4, '0')}`) : undefined;
       const proposal = { id: `PROP-${String(proposals.length + 185).padStart(6, '0')}`, proposalType: body.proposalType, title: body.title, academicUnitId: body.academicUnitId, effectiveTerm: body.effectiveTerm, details: body.details || {}, requirementId, proposedVersion: body.proposalType === 'New Requirement' ? `${requirementId}-V1.0` : 'v1.0', status: 'Submitted', currentStage: 'Department Curriculum Committee', createdBy: 'USR-000001', createdBySubject: context?.subject || 'seed:ccms-admin@northernstar.ca', submittedAt: new Date().toISOString() };
+      instantiateInMemoryWorkflow(proposal);
       proposals.push(proposal);
       await audit('Proposal submitted', 'Proposal', proposal.id, null, proposal, 'Submitted from New Course Proposal wizard', correlationId);
       return json(res, 201, proposal);
@@ -262,13 +301,19 @@ const server = http.createServer(async (req, res) => {
       const proposal = proposals.find(item => item.id === proposalAction[1]);
       if (!proposal) return json(res, 404, { error: 'Proposal not found' });
       if (proposalAction[2] === 'advance') {
-        const stages = ['Department Curriculum Committee', 'Faculty Curriculum Committee', 'Academic Programs Committee', 'Senate Curriculum Committee', 'Senate'];
+        const workflow = workflowInstances.find(item => item.proposalId === proposal.id);
+        if (!workflow) return json(res, 409, { error: 'Proposal has no workflow instance' });
+        const stages = approvalRoute;
         const current = stages.indexOf(proposal.currentStage);
         const next = current + 1;
-        if (next >= stages.length) { proposal.currentStage = 'Final Approval Complete'; proposal.status = 'Approved'; proposal.officialVersion = 'v1.0'; await audit('Proposal approved', 'Proposal', proposal.id, 'Under Review', 'Approved', 'Final governance approval recorded', correlationId); return json(res, 200, proposal); }
-        proposal.currentStage = stages[next]; proposal.status = 'Under Review'; await audit('Approval step completed', 'Proposal', proposal.id, stages[Math.max(current, 0)] ?? 'Submitted', proposal.currentStage, 'Governance approval progression', correlationId); return json(res, 200, proposal);
+        const currentStep = workflowStepInstances.find(item => item.workflowInstanceId === workflow.id && item.sequence === workflow.currentStep);
+        const currentWork = approvalWorkItems.filter(item => item.workflowInstanceId === workflow.id && item.workflowStepInstanceId === currentStep?.id && ['PENDING','IN_PROGRESS'].includes(item.status));
+        currentWork.forEach(item => { item.status = 'COMPLETED'; });
+        if (next >= stages.length) { currentStep.status = 'APPROVED'; workflow.status = 'COMPLETED'; workflow.currentStep = stages.length; workflow.currentStage = 'Final Approval Complete'; proposal.currentStage = workflow.currentStage; proposal.status = 'Approved'; await audit('Proposal approved', 'Proposal', proposal.id, 'Under Review', 'Approved', 'Final governance approval recorded', correlationId); return json(res, 200, proposal); }
+        currentStep.status = 'APPROVED'; workflow.currentStep = next + 1; workflow.currentStage = stages[next]; workflowStepInstances.find(item => item.workflowInstanceId === workflow.id && item.sequence === workflow.currentStep).status = 'IN_PROGRESS'; approvalWorkItems.push({ id: `AWI-${String(approvalWorkItems.length + 1).padStart(6, '0')}`, workflowInstanceId: workflow.id, workflowStepInstanceId: `${workflow.id}-STEP-${workflow.currentStep}`, proposalId: proposal.id, proposalNo: proposal.id, proposalType: proposal.proposalType, committee: workflow.currentStage, assigneeUserId: 'USR-000003', status: 'PENDING' }); proposal.currentStage = workflow.currentStage; proposal.status = 'Under Review'; await audit('Approval step completed', 'Proposal', proposal.id, stages[Math.max(current, 0)] ?? 'Submitted', proposal.currentStage, 'Governance approval progression', correlationId); return json(res, 200, proposal);
       }
       if (proposal.status !== 'Approved') return json(res, 409, { error: 'Final approval is required before promotion' });
+      const workflow = workflowInstances.find(item => item.proposalId === proposal.id); if (!workflow || workflow.status !== 'COMPLETED') return json(res, 409, { error: 'Workflow must be completed before promotion' });
       proposal.status = 'Official'; proposal.officialVersion = 'v1.0'; proposal.promotedAt = new Date().toISOString(); await audit('Official version promoted', 'OfficialCurriculumVersion', proposal.id, 'Approved proposal', 'Official v1.0', 'Final approval promotion', correlationId); return json(res, 200, proposal);
     }
     if (req.method === 'POST' && url.pathname === '/api/publications') {

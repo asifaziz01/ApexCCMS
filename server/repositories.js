@@ -42,6 +42,26 @@ export async function listUsers(institutionId) {
 
 function uuid(value) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) ? value : null; }
 
+const approvalRoute = ['Department Curriculum Committee', 'Faculty Curriculum Committee', 'Academic Programs Committee', 'Senate'];
+
+async function createWorkflowInstances(client, { institutionId, proposalId, proposalType }) {
+  const existing = await client.query('SELECT id, status, current_step, current_stage FROM workflow_instances WHERE institution_id = $1 AND proposal_id = $2 FOR UPDATE', [institutionId, proposalId]);
+  if (existing.rows[0]) return existing.rows[0];
+  const workflow = await client.query(`INSERT INTO workflow_instances (institution_id, proposal_id, status, current_step, current_stage) VALUES ($1,$2,'ACTIVE',1,$3) RETURNING id, status, current_step AS "currentStep", current_stage AS "currentStage"`, [institutionId, proposalId, approvalRoute[0]]);
+  for (const [index, committeeName] of approvalRoute.entries()) {
+    const step = await client.query(`INSERT INTO workflow_step_instances (institution_id, workflow_instance_id, sequence, committee_name, status, started_at) VALUES ($1,$2,$3,$4,$5,CASE WHEN $3 = 1 THEN now() ELSE NULL END) RETURNING id`, [institutionId, workflow.rows[0].id, index + 1, committeeName, index === 0 ? 'IN_PROGRESS' : 'WAITING']);
+    if (index === 0) {
+      const reviewers = await client.query(`SELECT cm.user_id FROM committee_memberships cm JOIN committees c ON c.id = cm.committee_id AND c.name = $2 JOIN users u ON u.id = cm.user_id WHERE cm.institution_id = $1 AND c.status = 'Active' AND cm.effective_from <= CURRENT_DATE AND (cm.effective_to IS NULL OR cm.effective_to >= CURRENT_DATE) AND cm.voting = true AND u.status = 'Active'`, [institutionId, committeeName]);
+      if (reviewers.rows.length) {
+        for (const reviewer of reviewers.rows) await client.query(`INSERT INTO approval_work_items (institution_id, workflow_step_instance_id, proposal_id, committee_name, assignee_user_id, status) VALUES ($1,$2,$3,$4,$5,'PENDING') ON CONFLICT (workflow_step_instance_id, assignee_user_id) DO NOTHING`, [institutionId, step.rows[0].id, proposalId, committeeName, reviewer.user_id]);
+      } else {
+        await client.query(`INSERT INTO approval_work_items (institution_id, workflow_step_instance_id, proposal_id, committee_name, status) VALUES ($1,$2,$3,$4,'PENDING')`, [institutionId, step.rows[0].id, proposalId, committeeName]);
+      }
+    }
+  }
+  return workflow.rows[0];
+}
+
 export async function createProposal({ institutionId, actorSubject, proposalType, title, academicUnitId, effectiveTerm, details = {}, itemType: requestedItemType, stableCode, proposedVersion = 'v1.0' }) {
   const scope = institutionScope(institutionId);
   const actor = await query('SELECT id FROM users WHERE institution_id = $1 AND oidc_subject = $2 AND status = $3', [scope, actorSubject, 'Active']);
@@ -54,7 +74,8 @@ export async function createProposal({ institutionId, actorSubject, proposalType
     const item = await client.query(`INSERT INTO curriculum_items (institution_id, item_type, stable_code, owning_unit_id) VALUES ($1,$2,$3,$4) RETURNING id, stable_code`, [scope, itemType, stableCode || `PENDING-${randomCode()}`, uuid(academicUnitId)]);
     const version = await client.query(`INSERT INTO curriculum_versions (institution_id, curriculum_item_id, version_no, lifecycle_state, title, effective_term, payload, created_by) VALUES ($1,$2,1,'Proposed',$3,$4,$5,$6) RETURNING id`, [scope, item.rows[0].id, title, effectiveTerm, JSON.stringify(details), actor.rows[0].id]);
     const proposal = await client.query(`INSERT INTO proposals (institution_id, proposal_no, proposal_type, curriculum_item_id, proposed_version_id, status, current_stage, created_by, submitted_at) VALUES ($1,$2,$3,$4,$5,'Submitted','Department Curriculum Committee',$6,now()) RETURNING id, proposal_no, proposal_type, status, current_stage, created_by, submitted_at, proposed_version_id`, [scope, `PROP-${randomCode()}`, proposalType, item.rows[0].id, version.rows[0].id, actor.rows[0].id]);
-    return { ...proposal.rows[0], id: proposal.rows[0].id, proposalNo: proposal.rows[0].proposal_no, title, academicUnitId, effectiveTerm, details, requirementId: itemType === 'Requirement' ? item.rows[0].stable_code : undefined, proposedVersion: itemType === 'Requirement' ? `${item.rows[0].stable_code}-V1.0` : proposedVersion };
+    const workflow = await createWorkflowInstances(client, { institutionId: scope, proposalId: proposal.rows[0].id, proposalType });
+    return { ...proposal.rows[0], id: proposal.rows[0].id, proposalNo: proposal.rows[0].proposal_no, title, academicUnitId, effectiveTerm, details, requirementId: itemType === 'Requirement' ? item.rows[0].stable_code : undefined, proposedVersion: itemType === 'Requirement' ? `${item.rows[0].stable_code}-V1.0` : proposedVersion, workflowInstanceId: workflow.id, workflowStatus: workflow.status, currentStage: workflow.currentStage || workflow.current_stage };
   });
 }
 
@@ -67,12 +88,22 @@ export async function advanceProposal(institutionId, proposalId) {
     const current = await client.query(`SELECT * FROM proposals WHERE institution_id = $1 AND id = $2 FOR UPDATE`, [scope, proposalId]);
     if (!current.rows[0]) return null;
     const proposal = current.rows[0];
-    const index = stages.indexOf(proposal.current_stage);
-    if (index < 0 || index + 1 >= stages.length) {
-      await client.query(`UPDATE proposals SET current_stage = 'Final Approval Complete', status = 'Approved', completed_at = now() WHERE id = $1 AND institution_id = $2`, [proposalId, scope]);
-      return { ...proposal, current_stage: 'Final Approval Complete', status: 'Approved' };
+    const workflowResult = await client.query(`SELECT * FROM workflow_instances WHERE institution_id = $1 AND proposal_id = $2 FOR UPDATE`, [scope, proposalId]);
+    if (!workflowResult.rows[0]) throw Object.assign(new Error('Proposal has no workflow instance'), { statusCode: 409 });
+    const workflow = workflowResult.rows[0];
+    const currentStep = await client.query(`SELECT * FROM workflow_step_instances WHERE workflow_instance_id = $1 AND sequence = $2 FOR UPDATE`, [workflow.id, workflow.current_step]);
+    if (!currentStep.rows[0]) throw Object.assign(new Error('Workflow current step is invalid'), { statusCode: 409 });
+    await client.query(`UPDATE workflow_step_instances SET status = 'APPROVED', completed_at = now() WHERE id = $1`, [currentStep.rows[0].id]);
+    await client.query(`UPDATE approval_work_items SET status = 'COMPLETED', completed_at = now() WHERE workflow_step_instance_id = $1 AND status IN ('PENDING','IN_PROGRESS')`, [currentStep.rows[0].id]);
+    if (workflow.current_step >= stages.length) {
+      await client.query(`UPDATE workflow_instances SET status = 'COMPLETED', current_stage = 'Final Approval Complete', updated_at = now() WHERE id = $1`, [workflow.id]);
+      const updated = await client.query(`UPDATE proposals SET current_stage = 'Final Approval Complete', status = 'Approved', completed_at = now() WHERE id = $1 AND institution_id = $2 RETURNING *`, [proposalId, scope]);
+      return updated.rows[0];
     }
-    const next = stages[index + 1];
+    const next = stages[workflow.current_step];
+    const nextStep = await client.query(`UPDATE workflow_step_instances SET status = 'IN_PROGRESS', started_at = now() WHERE workflow_instance_id = $1 AND sequence = $2 RETURNING *`, [workflow.id, workflow.current_step + 1]);
+    await client.query(`INSERT INTO approval_work_items (institution_id, workflow_step_instance_id, proposal_id, committee_name, status) VALUES ($1,$2,$3,$4,'PENDING')`, [scope, nextStep.rows[0].id, proposalId, next]);
+    await client.query(`UPDATE workflow_instances SET current_step = current_step + 1, current_stage = $2, updated_at = now() WHERE id = $1`, [workflow.id, next]);
     const updated = await client.query(`UPDATE proposals SET current_stage = $2, status = 'Under Review' WHERE id = $1 AND institution_id = $3 RETURNING *`, [proposalId, next, scope]);
     return updated.rows[0];
   });
@@ -86,6 +117,7 @@ export async function promoteProposal(institutionId, proposalId) {
     if (current.rows[0].status !== 'Approved') throw Object.assign(new Error('Final approval is required before promotion'), { statusCode: 409 });
     await client.query(`UPDATE curriculum_versions SET lifecycle_state = 'Official' WHERE id = $1 AND institution_id = $2`, [current.rows[0].proposed_version_id, scope]);
     const updated = await client.query(`UPDATE proposals SET status = 'Official' WHERE id = $1 AND institution_id = $2 RETURNING *`, [proposalId, scope]);
+    await client.query(`UPDATE workflow_instances SET status = 'COMPLETED', updated_at = now() WHERE institution_id = $1 AND proposal_id = $2`, [scope, proposalId]);
     return updated.rows[0];
   });
 }
@@ -102,6 +134,25 @@ export async function getProposal(institutionId, proposalId) {
   const scope = institutionScope(institutionId);
   const { rows } = await query(`SELECT * FROM proposals WHERE institution_id = $1 AND id = $2`, [scope, proposalId]);
   return rows[0] || null;
+}
+
+export async function listApprovalWorkItems(institutionId, { committeeName, assigneeUserId } = {}) {
+  const scope = institutionScope(institutionId);
+  const filters = ['awi.institution_id = $1']; const params = [scope];
+  if (committeeName) { params.push(committeeName); filters.push(`awi.committee_name = $${params.length}`); }
+  if (assigneeUserId) { params.push(assigneeUserId); filters.push(`awi.assignee_user_id = $${params.length}`); }
+  const { rows } = await query(`SELECT awi.id, awi.proposal_id AS "proposalId", p.proposal_no AS "proposalNo", p.proposal_type AS "proposalType", cv.title, awi.committee_name AS committee, awi.status, wi.current_stage AS "currentStage", wi.status AS "workflowStatus", awi.assignee_user_id AS "assigneeUserId" FROM approval_work_items awi JOIN proposals p ON p.id = awi.proposal_id JOIN workflow_step_instances wsi ON wsi.id = awi.workflow_step_instance_id JOIN workflow_instances wi ON wi.id = wsi.workflow_instance_id LEFT JOIN curriculum_versions cv ON cv.id = p.proposed_version_id WHERE ${filters.join(' AND ')} ORDER BY awi.created_at DESC`, params);
+  return rows;
+}
+
+export async function getWorkflow(institutionId, proposalId) {
+  const scope = institutionScope(institutionId);
+  const workflowResult = await query(`SELECT id, proposal_id AS "proposalId", status, current_step AS "currentStep", current_stage AS "currentStage", created_at AS "createdAt", updated_at AS "updatedAt" FROM workflow_instances WHERE institution_id = $1 AND proposal_id = $2`, [scope, proposalId]);
+  if (!workflowResult.rows[0]) return null;
+  const workflow = workflowResult.rows[0];
+  const steps = await query(`SELECT id, sequence, committee_name AS committee, status, started_at AS "startedAt", completed_at AS "completedAt" FROM workflow_step_instances WHERE institution_id = $1 AND workflow_instance_id = $2 ORDER BY sequence`, [scope, workflow.id]);
+  const workItems = await query(`SELECT id, proposal_id AS "proposalId", committee_name AS committee, assignee_user_id AS "assigneeUserId", status, created_at AS "createdAt", completed_at AS "completedAt" FROM approval_work_items WHERE institution_id = $1 AND proposal_id = $2 ORDER BY created_at`, [scope, proposalId]);
+  return { workflow, steps: steps.rows, workItems: workItems.rows };
 }
 
 export async function listPublications(institutionId) {
