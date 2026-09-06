@@ -33,7 +33,7 @@ function instantiateInMemoryWorkflow(proposal) {
   if (existing) return existing;
   const workflow = { id: `WF-${String(workflowInstances.length + 1).padStart(6, '0')}`, proposalId: proposal.id, status: 'ACTIVE', currentStep: 1, currentStage: approvalRoute[0], createdAt: new Date().toISOString() };
   workflowInstances.push(workflow);
-  approvalRoute.forEach((committee, index) => workflowStepInstances.push({ id: `${workflow.id}-STEP-${index + 1}`, workflowInstanceId: workflow.id, proposalId: proposal.id, sequence: index + 1, committee, status: index === 0 ? 'IN_PROGRESS' : 'WAITING' }));
+  approvalRoute.forEach((committee, index) => workflowStepInstances.push({ id: `${workflow.id}-STEP-${index + 1}`, workflowInstanceId: workflow.id, proposalId: proposal.id, sequence: index + 1, committee, status: index === 0 ? 'IN_PROGRESS' : 'WAITING', dueAt: index === 0 ? 'Today' : 'After prior approval', assigneeUserId: index === 0 ? 'USR-000003' : null }));
   approvalWorkItems.push({ id: `AWI-${String(approvalWorkItems.length + 1).padStart(6, '0')}`, workflowInstanceId: workflow.id, workflowStepInstanceId: `${workflow.id}-STEP-1`, proposalId: proposal.id, proposalNo: proposal.id, proposalType: proposal.proposalType, title: proposal.title, committee: approvalRoute[0], assigneeUserId: 'USR-000003', status: 'PENDING' });
   proposal.workflowInstanceId = workflow.id;
   proposal.currentStage = workflow.currentStage;
@@ -225,9 +225,9 @@ const server = http.createServer(async (req, res) => {
     const workflowMatch = url.pathname.match(/^\/api\/proposals\/([^/]+)\/workflow$/);
     if (req.method === 'GET' && workflowMatch) {
       const scope = context?.institutionId || configuredInstitutionId;
-      if (databaseStatus().configured) { const workflow = await getWorkflow(scope, workflowMatch[1]); return workflow ? json(res, 200, { ...workflow, storage: 'postgresql' }) : json(res, 404, { error: 'Workflow instance not found' }); }
+      if (databaseStatus().configured) { const workflow = await getWorkflow(scope, workflowMatch[1]); return workflow ? json(res, 200, { ...workflow, workflow: { ...workflow.workflow, workflow: workflow.workflow }, storage: 'postgresql' }) : json(res, 404, { error: 'Workflow instance not found' }); }
       const workflow = workflowInstances.find(item => item.proposalId === workflowMatch[1]);
-      return workflow ? json(res, 200, { workflow, steps: workflowStepInstances.filter(item => item.workflowInstanceId === workflow.id), workItems: approvalWorkItems.filter(item => item.workflowInstanceId === workflow.id), storage: 'in-memory-demo' }) : json(res, 404, { error: 'Workflow instance not found' });
+      return workflow ? json(res, 200, { workflow: { ...workflow, workflow }, steps: workflowStepInstances.filter(item => item.workflowInstanceId === workflow.id), workItems: approvalWorkItems.filter(item => item.workflowInstanceId === workflow.id), storage: 'in-memory-demo' }) : json(res, 404, { error: 'Workflow instance not found' });
     }
     if (req.method === 'GET' && url.pathname === '/api/governance/routes') return json(res, 200, { source: 'authorized-governance-route-read-model', routes: ['New Requirement','New Course','Course Modification','New Program','Program Modification','New Credential'].map((proposalType,index) => ({ id: `WF-0000${index + 1}`, proposalType, name: 'Default Curriculum Approval Route', status: 'Active', steps: approvalRoute })) });
     const approvalHistoryMatch = url.pathname.match(/^\/api\/proposals\/([^/]+)\/approval-history$/);
