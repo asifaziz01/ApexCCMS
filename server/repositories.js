@@ -109,6 +109,32 @@ export async function advanceProposal(institutionId, proposalId) {
   });
 }
 
+export async function returnProposal(institutionId, proposalId) {
+  const scope = institutionScope(institutionId);
+  return withTransaction(async client => {
+    const workflow = await client.query(`SELECT * FROM workflow_instances WHERE institution_id = $1 AND proposal_id = $2 FOR UPDATE`, [scope, proposalId]);
+    if (!workflow.rows[0]) return null;
+    await client.query(`UPDATE workflow_instances SET status = 'PAUSED', updated_at = now() WHERE id = $1`, [workflow.rows[0].id]);
+    await client.query(`UPDATE workflow_step_instances SET status = 'RETURNED' WHERE workflow_instance_id = $1 AND sequence = $2`, [workflow.rows[0].id, workflow.rows[0].current_step]);
+    await client.query(`UPDATE approval_work_items SET status = 'RETURNED', completed_at = now() WHERE proposal_id = $1 AND status IN ('PENDING','IN_PROGRESS')`, [proposalId]);
+    const updated = await client.query(`UPDATE proposals SET status = 'Returned' WHERE institution_id = $1 AND id = $2 RETURNING *`, [scope, proposalId]);
+    return updated.rows[0] || null;
+  });
+}
+
+export async function resubmitProposal(institutionId, proposalId) {
+  const scope = institutionScope(institutionId);
+  return withTransaction(async client => {
+    const workflow = await client.query(`SELECT * FROM workflow_instances WHERE institution_id = $1 AND proposal_id = $2 FOR UPDATE`, [scope, proposalId]);
+    if (!workflow.rows[0]) return null;
+    const step = await client.query(`UPDATE workflow_step_instances SET status = 'IN_PROGRESS', started_at = now() WHERE workflow_instance_id = $1 AND sequence = $2 RETURNING id, committee_name`, [workflow.rows[0].id, workflow.rows[0].current_step]);
+    await client.query(`UPDATE workflow_instances SET status = 'ACTIVE', current_stage = $2, updated_at = now() WHERE id = $1`, [workflow.rows[0].id, step.rows[0].committee_name]);
+    await client.query(`UPDATE approval_work_items SET status = 'PENDING', completed_at = NULL WHERE proposal_id = $1 AND workflow_step_instance_id = $2`, [proposalId, step.rows[0].id]);
+    const updated = await client.query(`UPDATE proposals SET status = 'Under Review' WHERE institution_id = $1 AND id = $2 RETURNING *`, [scope, proposalId]);
+    return updated.rows[0] || null;
+  });
+}
+
 export async function promoteProposal(institutionId, proposalId) {
   const scope = institutionScope(institutionId);
   return withTransaction(async client => {
@@ -143,6 +169,12 @@ export async function listApprovalWorkItems(institutionId, { committeeName, assi
   if (assigneeUserId) { params.push(assigneeUserId); filters.push(`awi.assignee_user_id = $${params.length}`); }
   const { rows } = await query(`SELECT awi.id, awi.proposal_id AS "proposalId", p.proposal_no AS "proposalNo", p.proposal_type AS "proposalType", cv.title, awi.committee_name AS committee, awi.status, wi.current_stage AS "currentStage", wi.status AS "workflowStatus", awi.assignee_user_id AS "assigneeUserId" FROM approval_work_items awi JOIN proposals p ON p.id = awi.proposal_id JOIN workflow_step_instances wsi ON wsi.id = awi.workflow_step_instance_id JOIN workflow_instances wi ON wi.id = wsi.workflow_instance_id LEFT JOIN curriculum_versions cv ON cv.id = p.proposed_version_id WHERE ${filters.join(' AND ')} ORDER BY awi.created_at DESC`, params);
   return rows;
+}
+
+export async function listMyApprovalWorkItems(institutionId, actorSubject) {
+  const scope = institutionScope(institutionId);
+  const actor = await query('SELECT id FROM users WHERE institution_id = $1 AND oidc_subject = $2 AND status = $3', [scope, actorSubject, 'Active']);
+  return actor.rows[0] ? listApprovalWorkItems(scope, { assigneeUserId: actor.rows[0].id }) : [];
 }
 
 export async function getWorkflow(institutionId, proposalId) {

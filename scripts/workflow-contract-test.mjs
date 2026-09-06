@@ -23,6 +23,12 @@ for (const proposalType of types) {
   if (!approvals.workItems.some(item => item.proposalId === proposal.id)) throw new Error(`${proposalType} is missing from approvals`);
   const committee = await request('/api/committees/Department%20Curriculum%20Committee/workload');
   if (!committee.workItems.some(item => item.proposalId === proposal.id)) throw new Error(`${proposalType} is missing from committee workload`);
+  await request(`/api/proposals/${proposal.id}/return`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  const returnedWorkflow = await request(`/api/proposals/${proposal.id}/workflow`);
+  if (returnedWorkflow.workflow.status !== 'PAUSED' || returnedWorkflow.steps[0].status !== 'RETURNED') throw new Error(`${proposalType} return did not pause the workflow`);
+  await request(`/api/proposals/${proposal.id}/resubmit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  const resubmittedWorkflow = await request(`/api/proposals/${proposal.id}/workflow`);
+  if (resubmittedWorkflow.workflow.status !== 'ACTIVE' || resubmittedWorkflow.steps[0].status !== 'IN_PROGRESS') throw new Error(`${proposalType} resubmission did not re-enter the current stage`);
   created.push(proposal);
 }
 

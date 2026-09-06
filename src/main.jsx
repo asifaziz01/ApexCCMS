@@ -92,7 +92,7 @@ function useLiveInstitution(fallback) {
 }
 function useLiveReviewRows(fallback) {
   const [records, setRecords] = useState(null);
-  useEffect(() => { let active = true; fetch(`${apiBase}/api/proposals`).then(response => response.ok ? response.json() : null).then(data => { if (active && data) setRecords((data.proposals || []).map(row => [row.id || row.proposalNo, `${row.proposalType || 'Curriculum'} proposal`, row.currentStage || 'Governance review', row.submittedAt ? `Submitted ${new Date(row.submittedAt).toLocaleDateString()}` : 'Awaiting schedule', row.status || 'Submitted', row.status === 'Approved' ? 'green' : 'risk'])); }).catch(() => {}); return () => { active = false; }; }, []);
+  useEffect(() => { let active = true; fetch(`${apiBase}/api/review-work-items`).then(response => response.ok ? response.json() : null).then(data => { if (active && data) setRecords((data.workItems || []).map(row => [row.proposalNo || row.proposalId, `${row.proposalType || 'Curriculum'} · ${row.title || 'Curriculum proposal'}`, row.committee || row.currentStage || 'Governance review', row.status || 'Pending', 'Submitted', 'risk'])); }).catch(() => {}); return () => { active = false; }; }, []);
   return records || fallback;
 }
 function useLiveApprovalRows(fallback) {

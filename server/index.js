@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import { databaseStatus, databaseReady, closeDatabase } from './db.js';
 import { authStatus, authenticateRequest } from './auth.js';
-import { getInstitution, listAcademicUnits, renameAcademicUnit, listUsers, listProposals, getProposal, getWorkflow, listApprovalWorkItems, listPublications, listPublishedConsumerRecords, listAuditEvents, listEvidenceItems, createEvidenceItem, createProposal, advanceProposal, promoteProposal, queuePublication, publishPublication, appendAuditEvent } from './repositories.js';
+import { getInstitution, listAcademicUnits, renameAcademicUnit, listUsers, listProposals, getProposal, getWorkflow, listApprovalWorkItems, listMyApprovalWorkItems, listPublications, listPublishedConsumerRecords, listAuditEvents, listEvidenceItems, createEvidenceItem, createProposal, advanceProposal, returnProposal, resubmitProposal, promoteProposal, queuePublication, publishPublication, appendAuditEvent } from './repositories.js';
 import { authorize } from './authorization.js';
 import { enqueueJob, listJobs, getJob } from './jobs.js';
 
@@ -34,7 +34,7 @@ function instantiateInMemoryWorkflow(proposal) {
   const workflow = { id: `WF-${String(workflowInstances.length + 1).padStart(6, '0')}`, proposalId: proposal.id, status: 'ACTIVE', currentStep: 1, currentStage: approvalRoute[0], createdAt: new Date().toISOString() };
   workflowInstances.push(workflow);
   approvalRoute.forEach((committee, index) => workflowStepInstances.push({ id: `${workflow.id}-STEP-${index + 1}`, workflowInstanceId: workflow.id, proposalId: proposal.id, sequence: index + 1, committee, status: index === 0 ? 'IN_PROGRESS' : 'WAITING' }));
-  approvalWorkItems.push({ id: `AWI-${String(approvalWorkItems.length + 1).padStart(6, '0')}`, workflowInstanceId: workflow.id, workflowStepInstanceId: `${workflow.id}-STEP-1`, proposalId: proposal.id, proposalNo: proposal.id, proposalType: proposal.proposalType, committee: approvalRoute[0], assigneeUserId: 'USR-000003', status: 'PENDING' });
+  approvalWorkItems.push({ id: `AWI-${String(approvalWorkItems.length + 1).padStart(6, '0')}`, workflowInstanceId: workflow.id, workflowStepInstanceId: `${workflow.id}-STEP-1`, proposalId: proposal.id, proposalNo: proposal.id, proposalType: proposal.proposalType, title: proposal.title, committee: approvalRoute[0], assigneeUserId: 'USR-000003', status: 'PENDING' });
   proposal.workflowInstanceId = workflow.id;
   proposal.currentStage = workflow.currentStage;
   proposal.workflowStatus = workflow.status;
@@ -209,6 +209,12 @@ const server = http.createServer(async (req, res) => {
       if (databaseStatus().configured) return json(res, 200, { workItems: await listApprovalWorkItems(scope), storage: 'postgresql' });
       return json(res, 200, { workItems: approvalWorkItems.filter(item => item.status === 'PENDING' || item.status === 'IN_PROGRESS'), storage: 'in-memory-demo' });
     }
+    if (req.method === 'GET' && url.pathname === '/api/review-work-items') {
+      const scope = context?.institutionId || configuredInstitutionId;
+      if (databaseStatus().configured) return json(res, 200, { workItems: context?.subject ? await listMyApprovalWorkItems(scope, context.subject) : [], storage: 'postgresql' });
+      const assignee = context?.subject ? 'USR-000001' : 'USR-000001';
+      return json(res, 200, { workItems: approvalWorkItems.filter(item => item.assigneeUserId === assignee && ['PENDING', 'IN_PROGRESS'].includes(item.status)), storage: 'in-memory-demo' });
+    }
     const committeeWorkloadMatch = url.pathname.match(/^\/api\/committees\/([^/]+)\/workload$/);
     if (req.method === 'GET' && committeeWorkloadMatch) {
       const committee = decodeURIComponent(committeeWorkloadMatch[1]);
@@ -289,11 +295,11 @@ const server = http.createServer(async (req, res) => {
       if (!body.type) return json(res, 400, { error: 'type is required' });
       return json(res, 202, await enqueueJob({ type: body.type, payload: body.payload, actor: context?.subject || 'USR-000001', idempotencyKey: req.headers['idempotency-key'] || body.idempotencyKey || null, institutionId: context?.institutionId || configuredInstitutionId }));
     }
-    const proposalAction = url.pathname.match(/^\/api\/proposals\/([^/]+)\/(advance|promote)$/);
+    const proposalAction = url.pathname.match(/^\/api\/proposals\/([^/]+)\/(advance|promote|return|resubmit)$/);
     if (req.method === 'POST' && proposalAction) {
       enforce(context, proposalAction[2] === 'promote' ? ['Curriculum Administrator', 'Governance Administrator'] : ['Committee Member', 'Curriculum Administrator', 'Governance Administrator']);
       if (databaseStatus().configured) {
-        const updated = proposalAction[2] === 'promote' ? await promoteProposal(context?.institutionId || configuredInstitutionId, proposalAction[1]) : await advanceProposal(context?.institutionId || configuredInstitutionId, proposalAction[1]);
+        const updated = proposalAction[2] === 'promote' ? await promoteProposal(context?.institutionId || configuredInstitutionId, proposalAction[1]) : proposalAction[2] === 'return' ? await returnProposal(context?.institutionId || configuredInstitutionId, proposalAction[1]) : proposalAction[2] === 'resubmit' ? await resubmitProposal(context?.institutionId || configuredInstitutionId, proposalAction[1]) : await advanceProposal(context?.institutionId || configuredInstitutionId, proposalAction[1]);
         if (!updated) return json(res, 404, { error: 'Proposal not found' });
         await audit(proposalAction[2] === 'promote' ? 'Official version promoted' : updated.status === 'Approved' ? 'Proposal approved' : 'Approval step completed', 'Proposal', updated.id, null, updated, 'Database-backed governance transition', correlationId);
         return json(res, 200, updated);
@@ -310,7 +316,15 @@ const server = http.createServer(async (req, res) => {
         const currentWork = approvalWorkItems.filter(item => item.workflowInstanceId === workflow.id && item.workflowStepInstanceId === currentStep?.id && ['PENDING','IN_PROGRESS'].includes(item.status));
         currentWork.forEach(item => { item.status = 'COMPLETED'; });
         if (next >= stages.length) { currentStep.status = 'APPROVED'; workflow.status = 'COMPLETED'; workflow.currentStep = stages.length; workflow.currentStage = 'Final Approval Complete'; proposal.currentStage = workflow.currentStage; proposal.status = 'Approved'; await audit('Proposal approved', 'Proposal', proposal.id, 'Under Review', 'Approved', 'Final governance approval recorded', correlationId); return json(res, 200, proposal); }
-        currentStep.status = 'APPROVED'; workflow.currentStep = next + 1; workflow.currentStage = stages[next]; workflowStepInstances.find(item => item.workflowInstanceId === workflow.id && item.sequence === workflow.currentStep).status = 'IN_PROGRESS'; approvalWorkItems.push({ id: `AWI-${String(approvalWorkItems.length + 1).padStart(6, '0')}`, workflowInstanceId: workflow.id, workflowStepInstanceId: `${workflow.id}-STEP-${workflow.currentStep}`, proposalId: proposal.id, proposalNo: proposal.id, proposalType: proposal.proposalType, committee: workflow.currentStage, assigneeUserId: 'USR-000003', status: 'PENDING' }); proposal.currentStage = workflow.currentStage; proposal.status = 'Under Review'; await audit('Approval step completed', 'Proposal', proposal.id, stages[Math.max(current, 0)] ?? 'Submitted', proposal.currentStage, 'Governance approval progression', correlationId); return json(res, 200, proposal);
+        currentStep.status = 'APPROVED'; workflow.currentStep = next + 1; workflow.currentStage = stages[next]; workflowStepInstances.find(item => item.workflowInstanceId === workflow.id && item.sequence === workflow.currentStep).status = 'IN_PROGRESS'; approvalWorkItems.push({ id: `AWI-${String(approvalWorkItems.length + 1).padStart(6, '0')}`, workflowInstanceId: workflow.id, workflowStepInstanceId: `${workflow.id}-STEP-${workflow.currentStep}`, proposalId: proposal.id, proposalNo: proposal.id, proposalType: proposal.proposalType, title: proposal.title, committee: workflow.currentStage, assigneeUserId: 'USR-000003', status: 'PENDING' }); proposal.currentStage = workflow.currentStage; proposal.status = 'Under Review'; await audit('Approval step completed', 'Proposal', proposal.id, stages[Math.max(current, 0)] ?? 'Submitted', proposal.currentStage, 'Governance approval progression', correlationId); return json(res, 200, proposal);
+      }
+      if (proposalAction[2] === 'return') {
+        const workflow = workflowInstances.find(item => item.proposalId === proposal.id); if (!workflow) return json(res, 409, { error: 'Proposal has no workflow instance' });
+        workflow.status = 'PAUSED'; const step = workflowStepInstances.find(item => item.workflowInstanceId === workflow.id && item.sequence === workflow.currentStep); if (step) step.status = 'RETURNED'; approvalWorkItems.filter(item => item.proposalId === proposal.id && ['PENDING','IN_PROGRESS'].includes(item.status)).forEach(item => { item.status = 'RETURNED'; }); proposal.status = 'Returned'; await audit('Proposal returned', 'Proposal', proposal.id, 'Under Review', 'Returned', 'Governance revision requested', correlationId); return json(res, 200, proposal);
+      }
+      if (proposalAction[2] === 'resubmit') {
+        const workflow = workflowInstances.find(item => item.proposalId === proposal.id); if (!workflow) return json(res, 409, { error: 'Proposal has no workflow instance' });
+        workflow.status = 'ACTIVE'; const step = workflowStepInstances.find(item => item.workflowInstanceId === workflow.id && item.sequence === workflow.currentStep); if (step) step.status = 'IN_PROGRESS'; const item = approvalWorkItems.find(work => work.proposalId === proposal.id && work.workflowStepInstanceId === step?.id); if (item) item.status = 'PENDING'; proposal.status = 'Under Review'; await audit('Proposal resubmitted', 'Proposal', proposal.id, 'Returned', 'Under Review', 'Returned proposal re-entered current governance stage', correlationId); return json(res, 200, proposal);
       }
       if (proposal.status !== 'Approved') return json(res, 409, { error: 'Final approval is required before promotion' });
       const workflow = workflowInstances.find(item => item.proposalId === proposal.id); if (!workflow || workflow.status !== 'COMPLETED') return json(res, 409, { error: 'Workflow must be completed before promotion' });
